@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Bulk — VirusLens{% endblock %}
+{% block pagetitle %}VirusLens — Cyber Threat Analyzer{% endblock %}
+{% block content %}
+
+{% if message %}<div class="vl-card" style="margin-bottom:12px;">{{ message }}</div>{% endif %}
+
+<div class="grid2">
+  <section class="vl-card">
+    <h2 style="margin-top:0;">Upload CSV</h2>
+    <p class="muted" style="margin-top:-2px;">CSV with columns: <code>input</code>, <code>type</code> (optional)</p>
+
+    <form id="csvForm" method="post" action="/Bulk/upload" enctype="multipart/form-data">
+      <input type="hidden" name="vt_api_key" id="vt_api_key_hidden" value="{{ vt_api_key or '' }}">
+      <div id="dropzone" class="dropzone">
+        <div>
+          <div style="font-size:28px; margin-bottom:6px;">☁️</div>
+          <div><strong>Drag and drop file here</strong></div>
+          <div style="color:var(--muted);">Limit 200MB per file • CSV</div>
+        </div>
+        <input id="csvFile" name="file" type="file" accept=".csv" style="display:none;">
+      </div>
+      <div style="display:flex; gap:10px; margin-top:10px;">
+        <button type="button" id="browseBtn" class="btn">Browse files</button>
+        <button type="submit" class="btn">Process CSV</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="vl-card">
+    <h2 style="margin-top:0;">Paste IOCs</h2>
+    <p class="muted" style="margin-top:-2px;">One per line (URL or hash)</p>
+    <form id="pasteForm" method="post" action="/Bulk/paste">
+      <input type="hidden" name="vt_api_key" id="vt_api_key_hidden2" value="{{ vt_api_key or '' }}">
+      <textarea name="iocs" rows="14" class="input" placeholder="https://example.com
+malicious.com
+abcdef1234567890..."></textarea>
+      <div style="margin-top:10px;">
+        <button type="submit" class="btn">Scan Pasted</button>
+      </div>
+    </form>
+  </section>
+</div>
+
+<style>
+  .dropzone{
+    position: relative; border: 2px dashed var(--border); border-radius: 12px;
+    min-height: 120px; display:flex; align-items:center; justify-content:center;
+    text-align:center; background: rgba(255,255,255,0.04); cursor: pointer; padding: 18px;
+  }
+  .dropzone.dragover{ border-color:#5aa9ff; background:rgba(90,169,255,0.08); }
+</style>
+<script>
+  const dz = document.getElementById('dropzone');
+  const fi = document.getElementById('csvFile');
+  const bb = document.getElementById('browseBtn');
+
+  bb.addEventListener('click', () => fi.click());
+  dz.addEventListener('click', () => fi.click());
+  const prevent = e => { e.preventDefault(); e.stopPropagation(); };
+  ['dragenter','dragover','dragleave','drop'].forEach(ev => dz.addEventListener(ev, prevent));
+  ['dragenter','dragover'].forEach(ev => dz.addEventListener(ev, () => dz.classList.add('dragover')));
+  ['dragleave','drop'].forEach(ev => dz.addEventListener(ev, () => dz.classList.remove('dragover')));
+  dz.addEventListener('drop', (e) => { const f = e.dataTransfer.files; if (f && f.length) fi.files = f; });
+</script>
+{% endblock %}

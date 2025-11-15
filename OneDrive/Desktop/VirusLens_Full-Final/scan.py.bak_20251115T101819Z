@@ -1,0 +1,554 @@
+# scan.py
+"""
+Scan backend for VirusLens project.
+
+Features:
+- Submit URL to VirusTotal v3 and poll until analysis completes.
+- Lookup file hash (SHA256/SHA1/MD5) on VirusTotal v3 (last analysis).
+- Save scan results into local SQLite via SQLAlchemy.
+- Export saved results to CSV and PDF.
+- CLI for common operations.
+
+Dependencies (from requirements.txt + optional):
+- python-dotenv, requests, sqlalchemy, pandas, tldextract
+- Optional for PDF export: fpdf (pip install fpdf)
+"""
+
+from __future__ import annotations
+import os
+import time
+import json
+import argparse
+import logging
+from datetime import datetime
+from typing import Optional, Dict, Any, Tuple, List
+
+import requests
+from dotenv import load_dotenv
+from sqlalchemy import (create_engine, MetaData, Table, Column, Integer, String,
+                        DateTime, Text, select, insert)
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.engine import Engine
+import pandas as pd
+
+# try optional PDF library
+try:
+    from fpdf import FPDF  # type: ignore
+    _HAS_FPDF = True
+except Exception:
+    _HAS_FPDF = False
+
+# Load environment variables
+load_dotenv()  # will read .env file in cwd by default
+
+VIRUSTOTAL_API_KEY = os.getenv("a440e5460051563bb77ee0b3d0476507be55f699e23334e49a2e3e5f60ee96e3") or os.getenv("a440e5460051563bb77ee0b3d0476507be55f699e23334e49a2e3e5f60ee96e3")
+URLSCAN_API_KEY = os.getenv("019a6c59-7c00-752c-a20e-c33e8221f28e")
+OTX_API_KEY = os.getenv("6924ed65df045cab0da22e9adb8239f4922d158c360fcf6cec6507cd5aaa0f15")
+MOCK_MODE = os.getenv("MOCK_MODE", "false").lower() in ("1", "true", "yes")
+
+# DB config
+DB_FILE = os.getenv("VL_DB_FILE", "viruslens.db")
+DB_URL = f"sqlite:///{DB_FILE}"
+
+# logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("scan")
+
+# SQLAlchemy: simple table defined with "classic" Table API to keep compatibility
+metadata = MetaData()
+
+scans_table = Table(
+    "scans",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("scan_type", String(32), nullable=False),   # "url" or "hash"
+    Column("target", String(1024), nullable=False),    # url or hash
+    Column("status", String(32), nullable=False),      # "queued","in-progress","completed","error"
+    Column("vt_analysis_id", String(256), nullable=True),
+    Column("result_json", Text, nullable=True),
+    Column("created_at", DateTime, default=datetime.utcnow),
+    Column("updated_at", DateTime, default=datetime.utcnow),
+)
+
+
+def get_engine(db_url: str = DB_URL) -> Engine:
+    engine = create_engine(db_url, echo=False, future=True)
+    return engine
+
+from sqlalchemy import text
+
+def migrate_scans_table_if_needed(engine: Engine) -> None:
+    """
+    Inspect the 'scans' table and ALTER TABLE to add any missing columns expected by the current code.
+    This is safe for existing data: ALTER TABLE ... ADD COLUMN is supported in SQLite if a default is provided.
+    """
+    expected_columns = {
+        "id": "INTEGER",
+        "scan_type": "VARCHAR(32)",
+        "target": "VARCHAR(1024)",
+        "status": "VARCHAR(32)",
+        "vt_analysis_id": "VARCHAR(256)",
+        "result_json": "TEXT",
+        "created_at": "DATETIME",
+        "updated_at": "DATETIME",
+    }
+
+    with engine.connect() as conn:
+        # Check if table exists
+        r = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='scans'")).fetchone()
+        if not r:
+            # table doesn't exist, create fresh using metadata
+            metadata.create_all(engine)
+            logger.info("scans table did not exist; created new table.")
+            return
+
+        # get existing columns
+        rows = conn.execute(text("PRAGMA table_info(scans)")).fetchall()
+        existing_cols = [row[1] for row in rows]  # pragma returns (cid, name, type, ...)
+
+        cols_to_add = []
+        for col, ctype in expected_columns.items():
+            if col not in existing_cols:
+                cols_to_add.append((col, ctype))
+
+        if not cols_to_add:
+            logger.info("scans table already has expected columns.")
+            return
+
+        logger.info("Migrating scans table — adding columns: %s", ", ".join([c for c, _ in cols_to_add]))
+
+        # For each missing column, perform ALTER TABLE ADD COLUMN with a safe default where needed.
+        for col, ctype in cols_to_add:
+            # choose a SQL fragment for default suitable for the type
+            if col in ("created_at", "updated_at"):
+                # add timestamp default to keep rows queryable
+                sql = f"ALTER TABLE scans ADD COLUMN {col} {ctype} DEFAULT (CURRENT_TIMESTAMP)"
+            elif col == "scan_type":
+                sql = f"ALTER TABLE scans ADD COLUMN {col} {ctype} DEFAULT 'url'"
+            elif col == "status":
+                sql = f"ALTER TABLE scans ADD COLUMN {col} {ctype} DEFAULT 'queued'"
+            elif col == "target":
+                sql = f"ALTER TABLE scans ADD COLUMN {col} {ctype} DEFAULT ''"
+            elif col == "vt_analysis_id":
+                sql = f"ALTER TABLE scans ADD COLUMN {col} {ctype} DEFAULT NULL"
+            elif col == "result_json":
+                sql = f"ALTER TABLE scans ADD COLUMN {col} {ctype} DEFAULT NULL"
+            else:
+                sql = f"ALTER TABLE scans ADD COLUMN {col} {ctype} DEFAULT NULL"
+
+            try:
+                conn.execute(text(sql))
+                logger.info("Added column %s", col)
+            except Exception as e:
+                logger.exception("Failed to add column %s: %s", col, e)
+        # commit for safety
+        conn.commit()
+        logger.info("scans table migration complete.")
+
+
+def init_db(engine: Engine) -> None:
+    """
+    Initialize DB and migrate schema if needed.
+    Safe to call repeatedly.
+    """
+    # create tables if not existing
+    metadata.create_all(engine)
+    logger.info("Database initialized at %s", DB_FILE)
+
+    # attempt migration for scans table to add any missing columns without destroying existing data
+    try:
+        migrate_scans_table_if_needed(engine)
+    except Exception:
+        logger.exception("Failed to migrate scans table — please inspect DB manually.")
+        raise
+
+
+
+def init_db(engine: Engine) -> None:
+    metadata.create_all(engine)
+    logger.info("Database initialized at %s", DB_FILE)
+
+
+# ---------------------------
+# VirusTotal API helpers
+# ---------------------------
+VT_BASE = "https://www.virustotal.com/api/v3"
+
+
+def vt_headers() -> Dict[str, str]:
+    if not VIRUSTOTAL_API_KEY:
+        raise RuntimeError("VIRUSTOTAL_API_KEY not set in environment (.env)")
+    return {"x-apikey": VIRUSTOTAL_API_KEY, "User-Agent": "VirusLens/1.0"}
+
+
+def vt_submit_url(url: str) -> Dict[str, Any]:
+    """
+    Submit URL to VirusTotal for analysis.
+    Returns the raw response JSON.
+    """
+    if MOCK_MODE:
+        logger.info("[MOCK] vt_submit_url(%s)", url)
+        return {"data": {"id": "mock-analysis-id", "type": "analysis"}}
+
+    endpoint = f"{VT_BASE}/urls"
+    headers = vt_headers()
+    # API expects the URL as form data 'url'
+    resp = requests.post(endpoint, headers=headers, data={"url": url}, timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def vt_get_analysis(analysis_id: str) -> Dict[str, Any]:
+    """
+    Get analysis status/result from vt v3 analyses endpoint.
+    """
+    if MOCK_MODE:
+        logger.info("[MOCK] vt_get_analysis(%s)", analysis_id)
+        # mock completed response
+        return {"data": {"id": analysis_id, "attributes": {"status": "completed", "stats": {"malicious": 1}}}}
+
+    endpoint = f"{VT_BASE}/analyses/{analysis_id}"
+    headers = vt_headers()
+    resp = requests.get(endpoint, headers=headers, timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def vt_get_file_report(file_hash: str) -> Dict[str, Any]:
+    """
+    Lookup file hash last analysis result.
+    """
+    if MOCK_MODE:
+        logger.info("[MOCK] vt_get_file_report(%s)", file_hash)
+        return {"data": {"id": file_hash, "type": "file", "attributes": {"last_analysis_stats": {"malicious": 2, "undetected": 55}}}}
+
+    endpoint = f"{VT_BASE}/files/{file_hash}"
+    headers = vt_headers()
+    resp = requests.get(endpoint, headers=headers, timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
+
+# ---------------------------
+# Business logic
+# ---------------------------
+
+def save_scan(engine: Engine, scan_type: str, target: str, status: str = "queued", vt_analysis_id: Optional[str] = None, result_json: Optional[Dict[str, Any]] = None) -> int:
+    """
+    Insert a scan row and return the new ID.
+    """
+    now = datetime.utcnow()
+    try:
+        with engine.connect() as conn:
+            ins = insert(scans_table).values(
+                scan_type=scan_type,
+                target=target,
+                status=status,
+                vt_analysis_id=vt_analysis_id,
+                result_json=json.dumps(result_json) if result_json is not None else None,
+                created_at=now,
+                updated_at=now
+            )
+            result = conn.execute(ins)
+            conn.commit()
+            new_id = int(result.inserted_primary_key[0])
+            logger.info("Saved scan id=%s type=%s target=%s", new_id, scan_type, target)
+            return new_id
+    except SQLAlchemyError as e:
+        logger.exception("DB error saving scan: %s", e)
+        raise
+
+
+def update_scan_result(engine: Engine, scan_id: int, status: str, vt_analysis_id: Optional[str] = None, result_json: Optional[Dict[str, Any]] = None) -> None:
+    now = datetime.utcnow()
+    try:
+        with engine.connect() as conn:
+            upd = scans_table.update().where(scans_table.c.id == scan_id).values(
+                status=status, vt_analysis_id=vt_analysis_id, result_json=json.dumps(result_json) if result_json is not None else None, updated_at=now
+            )
+            conn.execute(upd)
+            conn.commit()
+            logger.info("Updated scan id=%s status=%s", scan_id, status)
+    except SQLAlchemyError:
+        logger.exception("DB error updating scan %s", scan_id)
+        raise
+
+
+def get_scan(engine: Engine, scan_id: int) -> Optional[Dict[str, Any]]:
+    try:
+        with engine.connect() as conn:
+            sel = select(scans_table).where(scans_table.c.id == scan_id)
+            row = conn.execute(sel).fetchone()
+            if row:
+                return dict(row._mapping)
+            return None
+    except SQLAlchemyError:
+        logger.exception("DB error reading scan %s", scan_id)
+        raise
+
+
+def list_scans(engine: Engine, limit: int = 100) -> List[Dict[str, Any]]:
+    try:
+        with engine.connect() as conn:
+            sel = select(scans_table).order_by(scans_table.c.created_at.desc()).limit(limit)
+            rows = conn.execute(sel).fetchall()
+            return [dict(r._mapping) for r in rows]
+    except SQLAlchemyError:
+        logger.exception("DB error listing scans")
+        raise
+
+
+def export_scans_csv(engine: Engine, out_path: str = "exports/scans.csv") -> str:
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    rows = list_scans(engine, limit=10000)
+    if not rows:
+        df = pd.DataFrame([], columns=["id", "scan_type", "target", "status", "vt_analysis_id", "created_at", "updated_at"])
+    else:
+        # parse JSON column to friendly string
+        for r in rows:
+            if r.get("result_json"):
+                try:
+                    r["result_json"] = json.dumps(json.loads(r["result_json"]), indent=2)
+                except Exception:
+                    r["result_json"] = str(r["result_json"])
+        df = pd.DataFrame(rows)
+    df.to_csv(out_path, index=False)
+    logger.info("Exported %d scans to %s", len(df), out_path)
+    return out_path
+
+
+def export_scan_pdf(engine: Engine, scan_id: int, out_path: str = None) -> str:
+    """
+    Export single scan to a simple PDF. Uses fpdf if available; otherwise writes an HTML file.
+    """
+    scan = get_scan(engine, scan_id)
+    if not scan:
+        raise ValueError(f"Scan id {scan_id} not found")
+
+    os.makedirs("exports", exist_ok=True)
+    if not out_path:
+        out_path = f"exports/scan_{scan_id}.pdf" if _HAS_FPDF else f"exports/scan_{scan_id}.html"
+
+    # Pretty text
+    rows = [
+        ("Scan ID", str(scan["id"])),
+        ("Type", scan["scan_type"]),
+        ("Target", scan["target"]),
+        ("Status", scan["status"]),
+        ("VT Analysis ID", scan.get("vt_analysis_id") or ""),
+        ("Created At", str(scan["created_at"])),
+        ("Updated At", str(scan["updated_at"])),
+        ("Result JSON", scan.get("result_json") or ""),
+    ]
+    if _HAS_FPDF:
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.add_page()
+        pdf.set_font("Arial", size=12)
+        for title, val in rows:
+            pdf.set_font(style="B")
+            pdf.cell(0, 8, f"{title}:", ln=True)
+            pdf.set_font(style="")
+            # ensure long values wrap
+            for chunk in str(val).splitlines():
+                pdf.multi_cell(0, 6, chunk)
+            pdf.ln(2)
+        pdf.output(out_path)
+        logger.info("Wrote PDF to %s", out_path)
+    else:
+        # fallback: write simple HTML
+        with open(out_path, "w", encoding="utf8") as f:
+            f.write("<html><body>\n")
+            f.write(f"<h1>Scan {scan_id}</h1>\n")
+            for title, val in rows:
+                f.write(f"<h3>{title}</h3>\n<pre>{val}</pre>\n")
+            f.write("</body></html>")
+        logger.info("Wrote HTML (no fpdf installed) to %s", out_path)
+    return out_path
+
+
+# ---------------------------
+# Workflow functions
+# ---------------------------
+
+def perform_url_scan(engine: Engine, url: str, poll: bool = True, poll_timeout: int = 180, poll_interval: int = 5) -> Dict[str, Any]:
+    """
+    Submit the URL to VT, save the scan record and (optionally) poll until VT analysis completes.
+    Returns the final scan record as dict.
+    """
+    # 1. Save a queued scan row
+    scan_id = save_scan(engine, "url", url, status="queued")
+
+    try:
+        # 2. Submit to VirusTotal
+        resp = vt_submit_url(url)
+        # data.id is the analysis id in many responses; sometimes the response contains a 'data' with 'id' or a link
+        vt_analysis_id = None
+        try:
+            vt_analysis_id = str(resp["data"]["id"])
+        except Exception:
+            vt_analysis_id = None
+
+        update_scan_result(engine, scan_id, "in-progress", vt_analysis_id=vt_analysis_id, result_json=resp)
+
+        final_result = {"initial_response": resp}
+        if poll and vt_analysis_id:
+            logger.info("Polling VT analysis %s", vt_analysis_id)
+            start = time.time()
+            while True:
+                elapsed = time.time() - start
+                if elapsed > poll_timeout:
+                    logger.warning("Polling timeout after %s seconds", poll_timeout)
+                    update_scan_result(engine, scan_id, "error", vt_analysis_id=vt_analysis_id, result_json={"error": "poll_timeout"})
+                    final_result["error"] = "poll_timeout"
+                    break
+                try:
+                    analysis = vt_get_analysis(vt_analysis_id)
+                    status = analysis.get("data", {}).get("attributes", {}).get("status")
+                    final_result["analysis"] = analysis
+                    if status == "completed":
+                        # Persist final analysis
+                        update_scan_result(engine, scan_id, "completed", vt_analysis_id=vt_analysis_id, result_json=analysis)
+                        logger.info("Analysis completed for %s", vt_analysis_id)
+                        break
+                    else:
+                        logger.debug("Analysis %s status=%s; sleeping %s", vt_analysis_id, status, poll_interval)
+                except requests.HTTPError as e:
+                    logger.exception("HTTP error while polling VT: %s", e)
+                except Exception:
+                    logger.exception("Unexpected error while polling VT")
+                time.sleep(poll_interval)
+        else:
+            # not polling: keep queued/in-progress with initial response
+            final_result["note"] = "not_polled"
+        # Return the stored scan record
+        return get_scan(engine, scan_id) or {"id": scan_id}
+    except Exception as e:
+        logger.exception("Error performing URL scan: %s", e)
+        update_scan_result(engine, scan_id, "error", vt_analysis_id=None, result_json={"error": str(e)})
+        raise
+
+
+def perform_hash_lookup(engine: Engine, file_hash: str) -> Dict[str, Any]:
+    """
+    Lookup a file hash on VT and store the result.
+    """
+    scan_id = save_scan(engine, "hash", file_hash, status="in-progress")
+    try:
+        resp = vt_get_file_report(file_hash)
+        update_scan_result(engine, scan_id, "completed", vt_analysis_id=file_hash, result_json=resp)
+        return get_scan(engine, scan_id) or {"id": scan_id}
+    except Exception as e:
+        logger.exception("Error performing hash lookup: %s", e)
+        update_scan_result(engine, scan_id, "error", vt_analysis_id=file_hash, result_json={"error": str(e)})
+        raise
+
+
+# ---------------------------
+# CLI
+# ---------------------------
+
+def cli_args():
+    p = argparse.ArgumentParser(prog="scan.py", description="VirusLens scan backend CLI")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    s1 = sub.add_parser("init-db", help="Initialize the SQLite DB")
+    s1.set_defaults(func=cmd_init_db)
+
+    s2 = sub.add_parser("scan-url", help="Submit URL to VT and (optionally) poll until analysis completes")
+    s2.add_argument("url", help="URL to scan")
+    s2.add_argument("--no-poll", dest="poll", action="store_false", help="Do not poll for completion")
+    s2.add_argument("--timeout", type=int, default=180, help="Poll timeout seconds")
+    s2.set_defaults(func=cmd_scan_url)
+
+    s3 = sub.add_parser("lookup-hash", help="Lookup file hash on VT")
+    s3.add_argument("hash", help="File hash (sha256/sha1/md5)")
+    s3.set_defaults(func=cmd_lookup_hash)
+
+    s4 = sub.add_parser("list", help="List scans")
+    s4.add_argument("--limit", type=int, default=50)
+    s4.set_defaults(func=cmd_list)
+
+    s5 = sub.add_parser("export-csv", help="Export all scans to CSV")
+    s5.add_argument("--out", default="exports/scans.csv")
+    s5.set_defaults(func=cmd_export_csv)
+
+    s6 = sub.add_parser("export-pdf", help="Export a single scan to PDF/HTML")
+    s6.add_argument("id", type=int, help="Scan ID to export")
+    s6.add_argument("--out", default=None)
+    s6.set_defaults(func=cmd_export_pdf)
+
+    s7 = sub.add_parser("count", help="Get number of saved scans")
+    s7.set_defaults(func=cmd_count)
+
+    return p
+
+
+# CLI command implementations:
+
+def cmd_init_db(args):
+    engine = get_engine()
+    init_db(engine)
+    return 0
+
+
+def cmd_scan_url(args):
+    engine = get_engine()
+    init_db(engine)
+    r = perform_url_scan(engine, args.url, poll=args.poll, poll_timeout=args.timeout)
+    print(json.dumps(r, default=str, indent=2))
+    return 0
+
+
+def cmd_lookup_hash(args):
+    engine = get_engine()
+    init_db(engine)
+    r = perform_hash_lookup(engine, args.hash)
+    print(json.dumps(r, default=str, indent=2))
+    return 0
+
+
+def cmd_list(args):
+    engine = get_engine()
+    init_db(engine)
+    rows = list_scans(engine, limit=args.limit)
+    print(json.dumps(rows, default=str, indent=2))
+    return 0
+
+
+def cmd_export_csv(args):
+    engine = get_engine()
+    init_db(engine)
+    out = export_scans_csv(engine, args.out)
+    print("Wrote:", out)
+    return 0
+
+
+def cmd_export_pdf(args):
+    engine = get_engine()
+    init_db(engine)
+    out = export_scan_pdf(engine, args.id, out_path=args.out)
+    print("Wrote:", out)
+    return 0
+
+
+def cmd_count(args):
+    engine = get_engine()
+    init_db(engine)
+    rows = list_scans(engine, limit=1000000)
+    print(len(rows))
+    return 0
+
+
+def main():
+    parser = cli_args()
+    args = parser.parse_args()
+    try:
+        return args.func(args)
+    except Exception as e:
+        logger.exception("Command failed: %s", e)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

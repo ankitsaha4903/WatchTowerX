@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Reports — VirusLens{% endblock %}
+{% block content %}
+
+<h1 class="title">VirusLens — Cyber Threat Analyzer</h1>
+<p>Generate a layman-friendly PDF for any completed scan.</p>
+<p>Loaded {{ count }} scan(s).</p>
+
+<hr/>
+
+<label for="scanSelect">Generate a PDF for:</label>
+<select id="scanSelect" name="scanSelect" class="input">
+  {# ✅ Server-side population; no cap #}
+  {% for s in scans %}
+    <option value="{{ s.id }}">{{ s.id }}</option>
+  {% endfor %}
+</select>
+
+<div style="margin-top: 14px; display:flex; gap:12px;">
+  <button id="btnCreate" class="btn">Create PDF</button>
+  <button id="btnRefresh" class="btn btn-secondary">Refresh list</button>
+</div>
+
+<script>
+  // ✅ No slicing; preserve all options
+  document.getElementById('btnCreate').addEventListener('click', () => {
+    const sel = document.getElementById('scanSelect');
+    const id = Number(sel.value);
+    if (!Number.isInteger(id) || id < 1) {
+      alert('Please select a valid Scan ID.');
+      return;
+    }
+    // Trigger PDF download
+    window.location.href = `/api/reports/pdf?scan_id=${id}`;
+  });
+
+  document.getElementById('btnRefresh').addEventListener('click', async () => {
+    const sel = document.getElementById('scanSelect');
+    sel.innerHTML = '<option disabled>Loading…</option>';
+    const resp = await fetch('/api/scans');
+    const data = await resp.json();
+    // sort by id desc (optional)
+    data.sort((a,b) => b.id - a.id);
+    sel.innerHTML = '';
+    for (const s of data) {
+      const opt = document.createElement('option');
+      opt.value = String(s.id);      // keep numeric value but as string for HTML
+      opt.textContent = String(s.id);
+      sel.appendChild(opt);
+    }
+  });
+</script>
+
+<style>
+  .title { font-size: 1.6rem; margin: 6px 0 2px; }
+  .input {
+    width: 360px; padding: 10px; border-radius: 8px;
+    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
+    color: #e8eef7;
+  }
+  .btn { padding: 10px 16px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1); background:#0e3a47; color:#e8eef7; cursor:pointer; }
+  .btn-secondary { background:#163a3f; }
+  .btn:hover { filter: brightness(1.08); }
+</style>
+{% endblock %}
