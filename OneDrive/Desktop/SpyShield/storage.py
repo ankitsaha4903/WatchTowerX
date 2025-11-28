@@ -1,20 +1,16 @@
 # storage.py
 #
-# Safe, Streamlit-friendly storage layer.
+# Final, Streamlit-safe storage layer.
 # - On Windows (local): tries to scan installed apps via registry (scanner_windows.py).
-# - On all other OS (including Streamlit Cloud Linux): uses sample data.
-# - Never raises FileNotFoundError if sample file is missing.
+# - On all other OS (Linux/macOS/Streamlit Cloud): uses embedded sample data.
+# - NO file access at all. NO FileNotFoundError possible.
 
-import json
 import platform
-from pathlib import Path
 from typing import Dict, List, Any
 
 from models import AppInfo, compute_risk
 
-DATA_FILE = Path("data") / "sample_apps.json"
-
-# Embedded fallback sample data (used if JSON file not found)
+# Embedded sample data used on non-Windows (e.g. Streamlit Cloud) or as fallback.
 EMBEDDED_SAMPLE_APPS: List[dict] = [
     {
         "package_name": "com.example.spyapp",
@@ -109,29 +105,10 @@ EMBEDDED_SAMPLE_APPS: List[dict] = [
 ]
 
 
-def _load_from_json() -> List[dict]:
-    """
-    Load sample data from JSON if it exists.
-    If not, return embedded sample data instead.
-    """
-    if DATA_FILE.exists():
-        try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            print(f"[SpyShield] Loaded {len(data)} apps from {DATA_FILE}")
-            return data
-        except Exception as exc:
-            print(f"[SpyShield] Error reading {DATA_FILE}: {exc}. Using embedded sample data.")
-            return EMBEDDED_SAMPLE_APPS
-    else:
-        print(f"[SpyShield] Sample data file not found: {DATA_FILE}. Using embedded sample data.")
-        return EMBEDDED_SAMPLE_APPS
-
-
 def _load_from_windows_registry() -> List[dict]:
     """
     Try to load installed apps from Windows registry.
-    If anything fails, fall back to JSON / embedded sample (no exceptions).
+    If anything fails, fall back to embedded sample data.
     """
     try:
         from scanner_windows import get_installed_apps_windows
@@ -140,13 +117,13 @@ def _load_from_windows_registry() -> List[dict]:
         raw_list = get_installed_apps_windows()
         print(f"[SpyShield] Found {len(raw_list)} installed applications in registry.")
         if not raw_list:
-            print("[SpyShield] Registry scan returned no apps, falling back to sample data.")
-            return _load_from_json()
+            print("[SpyShield] Registry scan returned no apps, using embedded sample data.")
+            return EMBEDDED_SAMPLE_APPS
         return raw_list
     except Exception as exc:
-        print("[SpyShield] Failed to scan Windows apps; falling back to sample data.")
+        print("[SpyShield] Failed to scan Windows apps; using embedded sample data.")
         print("Error:", exc)
-        return _load_from_json()
+        return EMBEDDED_SAMPLE_APPS
 
 
 def load_apps() -> Dict[str, dict]:
@@ -154,16 +131,15 @@ def load_apps() -> Dict[str, dict]:
     Main entry: load apps for the dashboard / Streamlit app.
 
     - On Windows: attempts registry scan, with safe fallback.
-    - On other OS (Linux/macOS/Streamlit Cloud): uses sample data only.
-    - NEVER raises FileNotFoundError if JSON is missing.
+    - On other OS (Linux/macOS/Streamlit Cloud): uses embedded sample data only.
     """
     system = platform.system().lower()
 
     if system == "windows":
         raw_list = _load_from_windows_registry()
     else:
-        print(f"[SpyShield] OS={system}. Using sample data (JSON or embedded).")
-        raw_list = _load_from_json()
+        print(f"[SpyShield] OS={system}. Using embedded sample data only.")
+        raw_list = EMBEDDED_SAMPLE_APPS
 
     apps: Dict[str, dict] = {}
     for raw in raw_list:
@@ -183,22 +159,3 @@ def load_apps() -> Dict[str, dict]:
         apps[app.package_name] = info
 
     return apps
-
-
-def save_apps(apps: Dict[str, dict]) -> None:
-    """
-    Optional helper: save current app data back to JSON (without risk fields).
-    Not used by Streamlit, but kept for completeness.
-    """
-    cleaned: List[dict] = []
-    for _, info in apps.items():
-        d = dict(info)
-        d.pop("risk_score", None)
-        d.pop("risk_level", None)
-        d.pop("risk_reasons", None)
-        cleaned.append(d)
-
-    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(cleaned, f, indent=4, ensure_ascii=False)
-    print(f"[SpyShield] Saved {len(cleaned)} apps to {DATA_FILE}")
