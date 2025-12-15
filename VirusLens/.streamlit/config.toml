@@ -1,7 +1,0 @@
-[server]
-address = "0.0.0.0"
-port = 0
-sslCertFile = "certs/server.pem"
-sslKeyFile  = "certs/server-key.pem"
-enableCORS = true
-enableXsrfProtection = true

@@ -1,5 +1,0 @@
-type,value,notes
-url,https://example.com,Basic harmless test domain
-url,https://httpbin.org/get,Public HTTP testing endpoint
-hash,9c1185a5c5e9fc54612808977ee8f548b2258d31,This is the SHA-1 of an empty string (harmless example)
-hash,e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855,This is the SHA-256 of an empty file (harmless example)
