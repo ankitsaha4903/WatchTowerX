@@ -1,9 +1,0 @@
-@echo off
-echo [*] Starting SOC Dashboard System...
-echo [*] Ensuring dependencies are installed...
-python -m pip install -r requirements.txt
-echo.
-echo [*] Starting Backend Server...
-echo [*] Access the Dashboard at: http://localhost:8000
-python -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
-pause

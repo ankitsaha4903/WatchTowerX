@@ -1,8 +1,0 @@
-__pycache__/
-*.py[cod]
-*$py.class
-*.db
-logs_dump.csv
-venv/
-.env
-.DS_Store
