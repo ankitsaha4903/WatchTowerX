@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+jinja2
+python-multipart
+websockets
+pandas
+scikit-learn
+user-agents
+geoip2
+requests

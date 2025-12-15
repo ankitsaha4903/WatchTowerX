@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="glass-panel">
+    <h2><i class="fas fa-usb"></i> USB Devices Inventory</h2>
+    <p class="text-muted">
+        List of all USB storage devices that have interacted with this endpoint.
+        Use the actions column to <strong>trust / allow</strong> or <strong>block</strong> specific devices.
+    </p>
+
+    <div class="table-responsive">
+        <table class="table table-hover text-light">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Mount Point</th>
+                    <th>Device ID (Serial)</th>
+                    <th>Vendor</th>
+                    <th>Product</th>
+                    <th>First Seen</th>
+                    <th>Last Seen</th>
+                    <th>Status</th>
+                    <th>Last Action</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for d in devices %}
+                <tr>
+                    <td>{{ d["id"] }}</td>
+                    <td class="font-monospace">{{ d["mount_point"] }}</td>
+                    <td class="font-monospace">{{ d["device_id"] }}</td>
+                    <td>{{ d["vendor"] }}</td>
+                    <td>{{ d["product"] }}</td>
+                    <td>{{ d["first_seen"] }}</td>
+                    <td>{{ d["last_seen"] }}</td>
+                    <td>
+                        {% if d["status"] == "allowed" %}
+                        <span class="badge badge-success">ALLOWED</span>
+                        {% elif d["status"] == "blocked" %}
+                        <span class="badge badge-danger">BLOCKED</span>
+                        {% else %}
+                        <span class="badge badge-warning">UNKNOWN</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ d["last_action"] }}</td>
+                    <td>
+                        {% if d["status"] == "allowed" %}
+                        <a class="btn btn-sm btn-danger" href="{{ url_for('block_device', device_id=d['id']) }}">
+                            <i class="fas fa-ban"></i> Block
+                        </a>
+                        {% else %}
+                        <a class="btn btn-sm btn-success" href="{{ url_for('allow_device', device_id=d['id']) }}">
+                            <i class="fas fa-check"></i> Trust
+                        </a>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="10" class="text-center">No devices found.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

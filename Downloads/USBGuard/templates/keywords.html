@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="grid-2">
+    <!-- Simple Keywords -->
+    <div class="glass-panel">
+        <h2><i class="fas fa-key"></i> DLP Keywords</h2>
+        <p class="text-muted">Files containing these keywords will trigger a DLP violation.</p>
+
+        <form method="POST" class="form-inline" style="margin-bottom: 20px;">
+            <input type="text" name="keyword" class="form-control" placeholder="Enter sensitive keyword..." required>
+            <button type="submit" class="btn btn-primary">Add Keyword</button>
+        </form>
+
+        <div class="table-responsive">
+            <table class="table table-hover text-light">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Keyword</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for k in keywords %}
+                    <tr>
+                        <td>{{ loop.index }}</td>
+                        <td class="text-accent">{{ k.keyword }}</td>
+                        <td>
+                            <a href="{{ url_for('delete_sensitive_keyword_route', keyword_id=k.id) }}"
+                                class="btn btn-sm btn-danger">
+                                <i class="fas fa-trash"></i>
+                            </a>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="3" class="text-center">No keywords defined.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Regex Patterns -->
+    <div class="glass-panel">
+        <h2><i class="fas fa-code"></i> Advanced Regex DLP</h2>
+        <p class="text-muted">Define regex patterns for advanced detection (e.g., Credit Cards, Emails).</p>
+
+        <form method="POST" style="margin-bottom: 20px;">
+            <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                <input type="text" name="regex_pattern" class="form-control"
+                    placeholder="Regex Pattern (e.g. \d{4}-\d{4})" required style="flex: 2;">
+                <input type="text" name="description" class="form-control" placeholder="Description (e.g. Credit Card)"
+                    required style="flex: 1;">
+            </div>
+            <button type="submit" class="btn btn-primary" style="width: 100%;">Add Pattern</button>
+        </form>
+
+        <div class="table-responsive">
+            <table class="table table-hover text-light">
+                <thead>
+                    <tr>
+                        <th>Pattern</th>
+                        <th>Description</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for r in regex_patterns %}
+                    <tr>
+                        <td class="font-monospace text-accent">{{ r.pattern }}</td>
+                        <td>{{ r.description }}</td>
+                        <td>
+                            <a href="{{ url_for('delete_sensitive_regex_route', regex_id=r.id) }}"
+                                class="btn btn-sm btn-danger">
+                                <i class="fas fa-trash"></i>
+                            </a>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="3" class="text-center">No regex patterns defined.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

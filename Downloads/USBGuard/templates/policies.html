@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="glass-panel">
+    <h2><i class="fas fa-cog"></i> Security Policies</h2>
+    <p class="text-muted">Configure global settings for the USB Guard agent.</p>
+
+    <form method="POST">
+        <div class="mb-4">
+            <label class="d-block mb-2">Default Action for New USB Devices</label>
+            <select name="default_usb_action" class="form-control">
+                <option value="block_unknown" {% if policies.get('default_usb_action')=='block_unknown' %}selected{%
+                    endif %}>Block Unknown Devices (Recommended)</option>
+                <option value="allow_all" {% if policies.get('default_usb_action')=='allow_all' %}selected{% endif %}>
+                    Allow All Devices</option>
+            </select>
+        </div>
+
+        <div class="mb-4">
+            <label class="d-block mb-2">Log File Events</label>
+            <select name="log_file_events" class="form-control">
+                <option value="true" {% if policies.get('log_file_events')=='true' %}selected{% endif %}>Yes - Log file
+                    creation/modification</option>
+                <option value="false" {% if policies.get('log_file_events')=='false' %}selected{% endif %}>No</option>
+            </select>
+        </div>
+
+        <div class="mb-4">
+            <label class="d-block mb-2">Alert on Block</label>
+            <select name="alert_on_block" class="form-control">
+                <option value="true" {% if policies.get('alert_on_block')=='true' %}selected{% endif %}>Yes - Send email
+                    alert when blocked</option>
+                <option value="false" {% if policies.get('alert_on_block')=='false' %}selected{% endif %}>No</option>
+            </select>
+        </div>
+
+        <div class="mb-4">
+            <label class="d-block mb-2">Alert Email Recipient</label>
+            <input type="email" name="alert_email" class="form-control" value="{{ policies.get('alert_email', '') }}"
+                placeholder="admin@example.com">
+        </div>
+
+        <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Save Policies</button>
+    </form>
+</div>
+{% endblock %}

@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="glass-panel">
+    <h2><i class="fas fa-folder-open"></i> Protected Paths</h2>
+    <p class="text-muted">Define paths on the local system that should be monitored or protected (Future Feature).</p>
+
+    <form method="POST" class="form-inline mb-4">
+        <input type="text" name="path" class="form-control mr-2" placeholder="C:\Confidential" required>
+        <button type="submit" class="btn btn-primary"><i class="fas fa-plus"></i> Add Path</button>
+    </form>
+
+    <div class="table-responsive">
+        <table class="table table-hover text-light">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Path</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in paths %}
+                <tr>
+                    <td>{{ row['id'] }}</td>
+                    <td><span class="badge badge-warning">{{ row['path'] }}</span></td>
+                    <td>
+                        <a href="{{ url_for('delete_sensitive_path', path_id=row['id']) }}"
+                            class="btn btn-sm btn-danger">
+                            <i class="fas fa-trash"></i> Delete
+                        </a>
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="3" class="text-center">No sensitive paths defined.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
